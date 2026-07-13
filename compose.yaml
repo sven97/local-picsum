@@ -1,0 +1,16 @@
+services:
+  local-picsum:
+    build: .
+    container_name: local-picsum
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      LIBRARY_ROOT: /photos
+      DATA_DIR: /data
+      REFRESH_INTERVAL: 6h
+    volumes:
+      # Change the host path to the single NAS root that may be browsed in the UI.
+      - /volume1/photo:/photos:ro
+      - ./data:/data
+    restart: unless-stopped
