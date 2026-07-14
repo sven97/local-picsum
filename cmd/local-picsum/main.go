@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -43,6 +44,67 @@ type app struct {
 type photo struct {
 	ID, Path      string
 	Width, Height int
+}
+type node struct {
+	Name     string  `json:"name"`
+	Path     string  `json:"path"`
+	Children []*node `json:"children,omitempty"`
+	Selected bool    `json:"selected"`
+	Disabled bool    `json:"disabled"`
+}
+
+// buildTree builds a folder tree from a flat list of relative directory
+// paths ("/"-separated, not including the root itself) and the set of
+// paths currently selected for indexing. Missing intermediate ancestors
+// are created automatically. The returned root node represents the
+// library root itself.
+func buildTree(dirs []string, selected map[string]bool) *node {
+	sorted := append([]string(nil), dirs...)
+	sort.Strings(sorted)
+
+	byPath := map[string]*node{"": {Name: "/ (library root)", Path: ""}}
+	var ensure func(p string) *node
+	ensure = func(p string) *node {
+		if n, ok := byPath[p]; ok {
+			return n
+		}
+		parent, name := "", p
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			parent, name = p[:i], p[i+1:]
+		}
+		n := &node{Name: name, Path: p}
+		byPath[p] = n
+		pn := ensure(parent)
+		pn.Children = append(pn.Children, n)
+		return n
+	}
+	for _, p := range sorted {
+		ensure(p)
+	}
+	for p, n := range byPath {
+		n.Selected = selected[p]
+	}
+	var mark func(n *node, ancestorSelected bool)
+	mark = func(n *node, ancestorSelected bool) {
+		n.Disabled = ancestorSelected
+		for _, c := range n.Children {
+			mark(c, ancestorSelected || n.Selected)
+		}
+	}
+	mark(byPath[""], false)
+	return byPath[""]
+}
+
+// isAncestor reports whether a is a strict ancestor of b. The root ("")
+// is a strict ancestor of every other path, but not of itself.
+func isAncestor(a, b string) bool {
+	if a == b {
+		return false
+	}
+	if a == "" {
+		return b != ""
+	}
+	return strings.HasPrefix(b, a+"/")
 }
 
 func main() {
@@ -228,7 +290,7 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 }
 func render(w http.ResponseWriter, title, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title><style>body{font-family:system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#17202a}input,button{font:inherit;padding:.5rem;margin:.4rem}button{cursor:pointer}code{background:#eef;padding:.2rem}.folder{padding:.35rem;border-bottom:1px solid #ddd}</style></head><body><h1>%s</h1>%s</body></html>`, title, title, body)
+	fmt.Fprintf(w, `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title><style>body{font-family:system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#17202a}input,button{font:inherit;padding:.5rem;margin:.4rem}button{cursor:pointer}code{background:#eef;padding:.2rem}ul.tree{list-style:none;margin:0;padding-left:1.1rem}ul.tree.root{padding-left:0}.node{padding:.15rem 0}.node.disabled{color:#888}.toggle{display:inline-block;width:1rem;cursor:pointer;user-select:none}</style></head><body><h1>%s</h1>%s</body></html>`, title, title, body)
 }
 
 func (a *app) admin(w http.ResponseWriter, r *http.Request) {
@@ -237,27 +299,130 @@ func (a *app) admin(w http.ResponseWriter, r *http.Request) {
 	}
 	var count int
 	_ = a.db.QueryRow("SELECT count(*) FROM photos").Scan(&count)
-	rows, _ := a.db.Query("SELECT path FROM folders ORDER BY path")
-	defer rows.Close()
-	var selected []string
-	for rows.Next() {
-		var p string
-		rows.Scan(&p)
-		selected = append(selected, p)
-	}
-	body := `<p><strong>` + strconv.Itoa(count) + `</strong> indexed images. The library root is <code>` + html(a.root) + `</code>.</p><p><a href="/logout">Sign out</a></p><h2>Selected folders</h2><div id="folders">`
-	for _, p := range selected {
-		label := p
-		if label == "" {
-			label = "/ (library root)"
-		}
-		body += `<div class="folder">` + html(label) + ` <button data-path="` + html(p) + `" class="remove">Remove</button></div>`
-	}
-	body += `</div><h2>Add a folder</h2><form id="add"><select name="path" id="path"><option value="">/ (library root)</option></select><button>Add selected folder</button></form><p><button id="refresh">Refresh catalog now</button> <span id="status"></span></p><h2>URL examples</h2><code>/800/600</code> · <code>/seed/home/800/600.webp?grayscale&amp;blur=2</code><script>const f=document.querySelector('#add'),path=document.querySelector('#path');async function browse(p=''){let r=await fetch('/api/admin/browse?path='+encodeURIComponent(p));if(!r.ok)return;for(let d of await r.json()){let o=document.createElement('option');o.value=d;o.textContent='/'+d;path.append(o)}}browse();f.onsubmit=async e=>{e.preventDefault();let r=await fetch('/api/admin/folders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:new FormData(f).get('path')})});if(r.ok)location.reload();else alert(await r.text())};document.querySelectorAll('.remove').forEach(b=>b.onclick=async()=>{if(confirm('Remove this folder from the library?')){let r=await fetch('/api/admin/folders?path='+encodeURIComponent(b.dataset.path),{method:'DELETE'});if(r.ok)location.reload();else alert(await r.text())}});document.querySelector('#refresh').onclick=async()=>{status.textContent='Scanning…';let r=await fetch('/api/admin/refresh',{method:'POST'});status.textContent=r.ok?'Refresh started':'Failed'}</script>`
+	body := `<p><strong>` + strconv.Itoa(count) + `</strong> indexed images. The library root is <code>` + html(a.root) + `</code>.</p><p><a href="/logout">Sign out</a></p><h2>Folders</h2><p>Check a folder to add it to the library. Its subfolders are covered automatically and shown disabled.</p><div id="tree">Loading…</div><p><button id="refresh">Refresh catalog now</button> <span id="status"></span></p><h2>URL examples</h2><code>/800/600</code> · <code>/seed/home/800/600.webp?grayscale&amp;blur=2</code><script>` + adminScript + `</script>`
 	render(w, "Local Picsum", body)
 }
+
+const adminScript = `
+const treeEl = document.querySelector('#tree');
+function anySelected(n) {
+  if (n.selected) return true;
+  return (n.children || []).some(anySelected);
+}
+function renderNode(n, depth) {
+  const li = document.createElement('li');
+  const row = document.createElement('div');
+  row.className = 'node' + (n.disabled ? ' disabled' : '');
+  const hasChildren = n.children && n.children.length > 0;
+  const toggle = document.createElement('span');
+  toggle.className = 'toggle';
+  row.append(toggle);
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = n.selected;
+  cb.disabled = n.disabled;
+  cb.onchange = () => setFolder(n.path, cb.checked);
+  row.append(cb);
+  const label = document.createElement('span');
+  label.textContent = ' ' + n.name + (n.disabled ? ' (included via parent)' : '');
+  row.append(label);
+  li.append(row);
+  if (hasChildren) {
+    const ul = document.createElement('ul');
+    ul.className = 'tree';
+    for (const c of n.children) ul.append(renderNode(c, depth + 1));
+    const expanded = depth === 0 || n.children.some(anySelected);
+    ul.hidden = !expanded;
+    toggle.textContent = expanded ? '▾' : '▸';
+    toggle.onclick = () => { ul.hidden = !ul.hidden; toggle.textContent = ul.hidden ? '▸' : '▾'; };
+  }
+  return li;
+}
+async function loadTree() {
+  const r = await fetch('/api/admin/browse');
+  if (!r.ok) { treeEl.textContent = 'Unable to load folders.'; return; }
+  const root = await r.json();
+  treeEl.innerHTML = '';
+  const ul = document.createElement('ul');
+  ul.className = 'tree root';
+  ul.append(renderNode(root, 0));
+  treeEl.append(ul);
+}
+async function setFolder(path, add) {
+  const r = add
+    ? await fetch('/api/admin/folders', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})})
+    : await fetch('/api/admin/folders?path=' + encodeURIComponent(path), {method: 'DELETE'});
+  if (r.ok) location.reload();
+  else alert(await r.text());
+}
+loadTree();
+document.querySelector('#refresh').onclick = async () => {
+  status.textContent = 'Scanning…';
+  const r = await fetch('/api/admin/refresh', {method: 'POST'});
+  status.textContent = r.ok ? 'Refresh started' : 'Failed';
+};
+`
+
 func html(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;").Replace(s)
+}
+
+var errFolderCovered = errors.New("already covered by an existing folder")
+
+func displayPath(p string) string {
+	if p == "" {
+		return "/ (library root)"
+	}
+	return "/" + p
+}
+
+func (a *app) folderPaths() ([]string, error) {
+	rows, err := a.db.Query("SELECT path FROM folders")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
+}
+
+// addFolder adds rel to the folder set, keeping it free of
+// ancestor/descendant pairs: it rejects the add if an existing folder
+// already covers rel, and removes any existing folders that rel now
+// covers.
+func (a *app) addFolder(rel string) error {
+	existing, err := a.folderPaths()
+	if err != nil {
+		return err
+	}
+	for _, p := range existing {
+		if isAncestor(p, rel) {
+			return fmt.Errorf("%w: %s", errFolderCovered, displayPath(p))
+		}
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, p := range existing {
+		if isAncestor(rel, p) {
+			if _, err := tx.Exec("DELETE FROM folders WHERE path=?", p); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec("INSERT OR IGNORE INTO folders(path) VALUES(?)", rel); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *app) folders(w http.ResponseWriter, r *http.Request) {
@@ -298,9 +463,12 @@ func (a *app) folders(w http.ResponseWriter, r *http.Request) {
 	if rel == "." {
 		rel = ""
 	}
-	_, err = a.db.Exec("INSERT OR IGNORE INTO folders(path) VALUES(?)", rel)
-	if err != nil {
-		http.Error(w, "unable to save folder", 500)
+	if err := a.addFolder(rel); err != nil {
+		if errors.Is(err, errFolderCovered) {
+			http.Error(w, err.Error(), 400)
+		} else {
+			http.Error(w, "unable to save folder", 500)
+		}
 		return
 	}
 	go a.refresh()
@@ -310,29 +478,28 @@ func (a *app) browse(w http.ResponseWriter, r *http.Request) {
 	if !a.requireAPI(w, r) {
 		return
 	}
-	p, e := a.safePath(r.URL.Query().Get("path"))
-	if e != nil {
-		http.Error(w, e.Error(), 400)
-		return
-	}
-	if info, err := os.Stat(p); err != nil || !info.IsDir() {
-		http.Error(w, "folder unreadable", 400)
-		return
-	}
 	var dirs []string
-	_ = filepath.WalkDir(p, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || path == p || !d.IsDir() || len(dirs) >= 10000 {
+	_ = filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || path == a.root || !d.IsDir() || len(dirs) >= 10000 {
 			return nil
 		}
 		rel, err := filepath.Rel(a.root, path)
 		if err == nil {
-			dirs = append(dirs, rel)
+			dirs = append(dirs, filepath.ToSlash(rel))
 		}
 		return nil
 	})
-	sort.Strings(dirs)
+	paths, err := a.folderPaths()
+	if err != nil {
+		http.Error(w, "unable to load folders", 500)
+		return
+	}
+	selected := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		selected[p] = true
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(dirs)
+	json.NewEncoder(w).Encode(buildTree(dirs, selected))
 }
 func (a *app) manualRefresh(w http.ResponseWriter, r *http.Request) {
 	if !a.requireAPI(w, r) {
