@@ -45,7 +45,7 @@ func TestSafePathRejectsEscape(t *testing.T) {
 func TestBuildTreeMarksSelectedAndDisablesDescendants(t *testing.T) {
 	dirs := []string{"2022_Photos", "2022_Photos/Vacation", "2022_Photos/Vacation/Alaska", "2023_Photos"}
 	selected := map[string]bool{"2022_Photos": true}
-	root := buildTree(dirs, selected)
+	root := buildTree(dirs, selected, nil)
 
 	if root.Path != "" || root.Name != "/ (library root)" {
 		t.Fatalf("unexpected root: %+v", root)
@@ -153,8 +153,29 @@ func TestIsAncestor(t *testing.T) {
 	}
 }
 
+func TestBuildTreeAggregatesCountsUpTheTree(t *testing.T) {
+	dirs := []string{"2022_Photos", "2022_Photos/Vacation"}
+	counts := map[string]int{
+		"":                        1, // stray file directly under the library root
+		"2022_Photos":             2,
+		"2022_Photos/Vacation":    5,
+	}
+	root := buildTree(dirs, nil, counts)
+	if root.Count != 8 {
+		t.Fatalf("expected root count 8 (1+2+5), got %d", root.Count)
+	}
+	photos2022 := root.Children[0]
+	if photos2022.Path != "2022_Photos" || photos2022.Count != 7 {
+		t.Fatalf("expected 2022_Photos count 7 (2+5), got %+v", photos2022)
+	}
+	vacation := photos2022.Children[0]
+	if vacation.Path != "2022_Photos/Vacation" || vacation.Count != 5 {
+		t.Fatalf("expected Vacation count 5, got %+v", vacation)
+	}
+}
+
 func TestBuildTreeAutoCreatesMissingAncestors(t *testing.T) {
-	root := buildTree([]string{"a/b/c"}, nil)
+	root := buildTree([]string{"a/b/c"}, nil, nil)
 	if len(root.Children) != 1 || root.Children[0].Path != "a" {
 		t.Fatalf("expected auto-created 'a' node, got %+v", root.Children)
 	}

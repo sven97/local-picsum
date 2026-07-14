@@ -51,14 +51,17 @@ type node struct {
 	Children []*node `json:"children,omitempty"`
 	Selected bool    `json:"selected"`
 	Disabled bool    `json:"disabled"`
+	Count    int     `json:"count"`
 }
 
 // buildTree builds a folder tree from a flat list of relative directory
-// paths ("/"-separated, not including the root itself) and the set of
-// paths currently selected for indexing. Missing intermediate ancestors
-// are created automatically. The returned root node represents the
-// library root itself.
-func buildTree(dirs []string, selected map[string]bool) *node {
+// paths ("/"-separated, not including the root itself), the set of paths
+// currently selected for indexing, and a count of supported image files
+// found directly inside each path (keyed the same way, "" for the root).
+// Missing intermediate ancestors are created automatically. Each node's
+// Count is the total across itself and all its descendants. The returned
+// root node represents the library root itself.
+func buildTree(dirs []string, selected map[string]bool, counts map[string]int) *node {
 	sorted := append([]string(nil), dirs...)
 	sort.Strings(sorted)
 
@@ -92,6 +95,18 @@ func buildTree(dirs []string, selected map[string]bool) *node {
 		}
 	}
 	mark(byPath[""], false)
+
+	var aggregate func(n *node) int
+	aggregate = func(n *node) int {
+		total := counts[n.Path]
+		for _, c := range n.Children {
+			total += aggregate(c)
+		}
+		n.Count = total
+		return total
+	}
+	aggregate(byPath[""])
+
 	return byPath[""]
 }
 
@@ -324,7 +339,7 @@ function renderNode(n, depth) {
   cb.onchange = () => setFolder(n.path, cb.checked);
   row.append(cb);
   const label = document.createElement('span');
-  label.textContent = ' ' + n.name + (n.disabled ? ' (included via parent)' : '');
+  label.textContent = ' ' + n.name + ' (' + n.count + ')' + (n.disabled ? ' (included via parent)' : '');
   row.append(label);
   li.append(row);
   if (hasChildren) {
@@ -479,14 +494,39 @@ func (a *app) browse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var dirs []string
+	counts := map[string]int{}
 	_ = filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || path == a.root || !d.IsDir() || len(dirs) >= 10000 {
+		if err != nil {
 			return nil
 		}
-		rel, err := filepath.Rel(a.root, path)
-		if err == nil {
-			dirs = append(dirs, filepath.ToSlash(rel))
+		if d.IsDir() {
+			// Synology creates a "@eaDir" thumbnail-cache folder inside every
+			// media folder, containing one subdirectory per photo named
+			// after that photo's filename. Skip it entirely: it isn't part
+			// of the library, and descending into it can add one directory
+			// per photo, easily blowing past the safety cap below.
+			if d.Name() == "@eaDir" {
+				return filepath.SkipDir
+			}
+			if path == a.root || len(dirs) >= 10000 {
+				return nil
+			}
+			if rel, err := filepath.Rel(a.root, path); err == nil {
+				dirs = append(dirs, filepath.ToSlash(rel))
+			}
+			return nil
 		}
+		if !supported(path) {
+			return nil
+		}
+		rel, err := filepath.Rel(a.root, filepath.Dir(path))
+		if err != nil {
+			return nil
+		}
+		if rel == "." {
+			rel = ""
+		}
+		counts[filepath.ToSlash(rel)]++
 		return nil
 	})
 	paths, err := a.folderPaths()
@@ -499,7 +539,7 @@ func (a *app) browse(w http.ResponseWriter, r *http.Request) {
 		selected[p] = true
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(buildTree(dirs, selected))
+	json.NewEncoder(w).Encode(buildTree(dirs, selected, counts))
 }
 func (a *app) manualRefresh(w http.ResponseWriter, r *http.Request) {
 	if !a.requireAPI(w, r) {
