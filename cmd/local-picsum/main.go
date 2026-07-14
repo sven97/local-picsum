@@ -350,6 +350,7 @@ function renderNode(n, depth) {
     ul.hidden = !expanded;
     toggle.textContent = expanded ? '▾' : '▸';
     toggle.onclick = () => { ul.hidden = !ul.hidden; toggle.textContent = ul.hidden ? '▸' : '▾'; };
+    li.append(ul);
   }
   return li;
 }
@@ -499,15 +500,10 @@ func (a *app) browse(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil
 		}
+		if isThumbnailCacheDir(d) {
+			return filepath.SkipDir
+		}
 		if d.IsDir() {
-			// Synology creates a "@eaDir" thumbnail-cache folder inside every
-			// media folder, containing one subdirectory per photo named
-			// after that photo's filename. Skip it entirely: it isn't part
-			// of the library, and descending into it can add one directory
-			// per photo, easily blowing past the safety cap below.
-			if d.Name() == "@eaDir" {
-				return filepath.SkipDir
-			}
 			if path == a.root || len(dirs) >= 10000 {
 				return nil
 			}
@@ -603,7 +599,13 @@ func (a *app) refresh() {
 			continue
 		}
 		filepath.WalkDir(base, func(path string, d fs.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil {
+				return nil
+			}
+			if isThumbnailCacheDir(d) {
+				return filepath.SkipDir
+			}
+			if d.IsDir() {
 				return nil
 			}
 			if !supported(path) {
@@ -644,6 +646,14 @@ func (a *app) refresh() {
 	}
 	log.Printf("catalog refresh complete: %d files", len(seen))
 }
+// isThumbnailCacheDir reports whether d is a Synology thumbnail-cache
+// directory ("@eaDir", created automatically inside every media folder,
+// containing one subdirectory per photo named after that photo's
+// filename). It must never be treated as part of the photo library.
+func isThumbnailCacheDir(d fs.DirEntry) bool {
+	return d.IsDir() && d.Name() == "@eaDir"
+}
+
 func supported(p string) bool {
 	switch strings.ToLower(filepath.Ext(p)) {
 	case ".jpg", ".jpeg", ".png", ".webp":

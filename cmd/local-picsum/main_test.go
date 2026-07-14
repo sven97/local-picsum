@@ -5,6 +5,9 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"image/jpeg"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -130,6 +133,51 @@ func TestAddFolderRemovesRedundantDescendants(t *testing.T) {
 	}
 	if len(paths) != 1 || paths[0] != "2022_Photos" {
 		t.Fatalf("expected only [2022_Photos] after adding ancestor, got %v", paths)
+	}
+}
+
+func mustWriteJPEG(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	if err := jpeg.Encode(f, img, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRefreshSkipsThumbnailCacheDir(t *testing.T) {
+	root := t.TempDir()
+	mustWriteJPEG(t, filepath.Join(root, "Album", "photo1.jpg"))
+	mustWriteJPEG(t, filepath.Join(root, "Album", "@eaDir", "photo1.jpg", "SYNOPHOTO_THUMB_XL.jpg"))
+
+	a := newTestApp(t)
+	a.root = root
+	if _, err := a.db.Exec("INSERT INTO folders(path) VALUES('')"); err != nil {
+		t.Fatal(err)
+	}
+
+	a.refresh()
+
+	var count int
+	if err := a.db.QueryRow("SELECT count(*) FROM photos").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 indexed photo (thumbnail cache excluded), got %d", count)
+	}
+	var path string
+	if err := a.db.QueryRow("SELECT path FROM photos").Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	if path != "Album/photo1.jpg" {
+		t.Fatalf("expected only Album/photo1.jpg indexed, got %q", path)
 	}
 }
 
