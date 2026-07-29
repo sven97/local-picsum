@@ -235,3 +235,61 @@ func TestBuildTreeAutoCreatesMissingAncestors(t *testing.T) {
 		t.Fatalf("expected 'a/b/c' leaf node, got %+v", b[0].Children)
 	}
 }
+
+func TestApplyOrientation(t *testing.T) {
+	// 3x2 source, one distinct color per pixel:
+	//   A B C
+	//   D E F
+	A := color.RGBA{R: 255, A: 255}
+	B := color.RGBA{G: 255, A: 255}
+	C := color.RGBA{B: 255, A: 255}
+	D := color.RGBA{R: 255, G: 255, A: 255}
+	E := color.RGBA{G: 255, B: 255, A: 255}
+	F := color.RGBA{R: 255, B: 255, A: 255}
+
+	src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	src.SetRGBA(0, 0, A)
+	src.SetRGBA(1, 0, B)
+	src.SetRGBA(2, 0, C)
+	src.SetRGBA(0, 1, D)
+	src.SetRGBA(1, 1, E)
+	src.SetRGBA(2, 1, F)
+
+	cases := []struct {
+		o    int
+		w, h int
+		grid [][]color.RGBA // grid[y][x]
+	}{
+		{1, 3, 2, [][]color.RGBA{{A, B, C}, {D, E, F}}},
+		{2, 3, 2, [][]color.RGBA{{C, B, A}, {F, E, D}}},
+		{3, 3, 2, [][]color.RGBA{{F, E, D}, {C, B, A}}},
+		{4, 3, 2, [][]color.RGBA{{D, E, F}, {A, B, C}}},
+		{5, 2, 3, [][]color.RGBA{{A, D}, {B, E}, {C, F}}},
+		{6, 2, 3, [][]color.RGBA{{D, A}, {E, B}, {F, C}}},
+		{7, 2, 3, [][]color.RGBA{{F, C}, {E, B}, {D, A}}},
+		{8, 2, 3, [][]color.RGBA{{C, F}, {B, E}, {A, D}}},
+	}
+
+	for _, tc := range cases {
+		got := applyOrientation(src, tc.o)
+		if got.Bounds().Dx() != tc.w || got.Bounds().Dy() != tc.h {
+			t.Fatalf("o=%d: got bounds %v, want %dx%d", tc.o, got.Bounds(), tc.w, tc.h)
+		}
+		for y, row := range tc.grid {
+			for x, want := range row {
+				if px := got.At(x, y); px != want {
+					t.Fatalf("o=%d: pixel (%d,%d) = %v, want %v", tc.o, x, y, px, want)
+				}
+			}
+		}
+	}
+}
+
+func TestApplyOrientationIdentityReturnsSameImage(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	for _, o := range []int{0, 1, 9} {
+		if got := applyOrientation(src, o); got != image.Image(src) {
+			t.Fatalf("o=%d: expected src returned unchanged", o)
+		}
+	}
+}

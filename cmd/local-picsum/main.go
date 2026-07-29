@@ -831,6 +831,45 @@ func decode(p string) (image.Image, error) {
 	}
 	return jpeg.Decode(f)
 }
+
+// applyOrientation corrects src for the given EXIF orientation value (1-8).
+// o<=1 or o>8 is treated as "no correction needed" and returns src unchanged.
+func applyOrientation(src image.Image, o int) image.Image {
+	if o <= 1 || o > 8 {
+		return src
+	}
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	ow, oh := w, h
+	if o >= 5 {
+		ow, oh = h, w
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, ow, oh))
+	for y := 0; y < oh; y++ {
+		for x := 0; x < ow; x++ {
+			var sx, sy int
+			switch o {
+			case 2: // flip horizontal
+				sx, sy = w-1-x, y
+			case 3: // rotate 180
+				sx, sy = w-1-x, h-1-y
+			case 4: // flip vertical
+				sx, sy = x, h-1-y
+			case 5: // transpose
+				sx, sy = y, x
+			case 6: // rotate 90 CW
+				sx, sy = y, h-1-x
+			case 7: // transverse
+				sx, sy = w-1-y, h-1-x
+			case 8: // rotate 90 CCW (270 CW)
+				sx, sy = w-1-y, x
+			}
+			dst.Set(x, y, src.At(b.Min.X+sx, b.Min.Y+sy))
+		}
+	}
+	return dst
+}
+
 func cover(src image.Image, w, h int) *image.RGBA {
 	b := src.Bounds()
 	sw, sh := b.Dx(), b.Dy()
