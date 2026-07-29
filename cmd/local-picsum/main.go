@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/chai2010/webp"
+	"github.com/rwcarlsen/goexif/exif"
 	"golang.org/x/crypto/bcrypt"
 	xdraw "golang.org/x/image/draw"
 	xwebp "golang.org/x/image/webp"
@@ -817,19 +819,45 @@ func cache(seed, id string, r *http.Request) string {
 	return "no-store"
 }
 func decode(p string) (image.Image, error) {
-	f, e := os.Open(p)
+	ext := strings.ToLower(filepath.Ext(p))
+	if ext == ".webp" || ext == ".png" {
+		f, e := os.Open(p)
+		if e != nil {
+			return nil, e
+		}
+		defer f.Close()
+		if ext == ".webp" {
+			return xwebp.Decode(f)
+		}
+		return png.Decode(f)
+	}
+	b, e := os.ReadFile(p)
 	if e != nil {
 		return nil, e
 	}
-	defer f.Close()
-	ext := strings.ToLower(filepath.Ext(p))
-	if ext == ".webp" {
-		return xwebp.Decode(f)
+	img, e := jpeg.Decode(bytes.NewReader(b))
+	if e != nil {
+		return nil, e
 	}
-	if ext == ".png" {
-		return png.Decode(f)
+	return applyOrientation(img, jpegOrientation(b)), nil
+}
+
+// jpegOrientation reads the EXIF Orientation tag from raw JPEG bytes,
+// defaulting to 1 (identity) if it's missing or unreadable.
+func jpegOrientation(b []byte) int {
+	x, e := exif.Decode(bytes.NewReader(b))
+	if e != nil {
+		return 1
 	}
-	return jpeg.Decode(f)
+	tag, e := x.Get(exif.Orientation)
+	if e != nil {
+		return 1
+	}
+	o, e := tag.Int(0)
+	if e != nil {
+		return 1
+	}
+	return o
 }
 
 // applyOrientation corrects src for the given EXIF orientation value (1-8).

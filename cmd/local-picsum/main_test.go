@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
@@ -291,5 +293,139 @@ func TestApplyOrientationIdentityReturnsSameImage(t *testing.T) {
 		if got := applyOrientation(src, o); got != image.Image(src) {
 			t.Fatalf("o=%d: expected src returned unchanged", o)
 		}
+	}
+}
+
+// exifOrientationSegment builds a minimal JPEG APP1 EXIF segment
+// containing only the Orientation tag.
+func exifOrientationSegment(o uint16) []byte {
+	var tiff bytes.Buffer
+	tiff.WriteString("II")
+	binary.Write(&tiff, binary.LittleEndian, uint16(42))
+	binary.Write(&tiff, binary.LittleEndian, uint32(8))
+
+	binary.Write(&tiff, binary.LittleEndian, uint16(1)) // 1 IFD entry
+	binary.Write(&tiff, binary.LittleEndian, uint16(0x0112))
+	binary.Write(&tiff, binary.LittleEndian, uint16(3)) // type SHORT
+	binary.Write(&tiff, binary.LittleEndian, uint32(1)) // count
+	binary.Write(&tiff, binary.LittleEndian, uint32(o)) // value (low 2 bytes)
+	binary.Write(&tiff, binary.LittleEndian, uint32(0)) // next IFD: none
+
+	var payload bytes.Buffer
+	payload.WriteString("Exif\x00\x00")
+	payload.Write(tiff.Bytes())
+
+	var seg bytes.Buffer
+	seg.WriteByte(0xFF)
+	seg.WriteByte(0xE1)
+	binary.Write(&seg, binary.BigEndian, uint16(payload.Len()+2))
+	seg.Write(payload.Bytes())
+	return seg.Bytes()
+}
+
+// jpegWithOrientation encodes img as JPEG and, if o != 0, injects an
+// EXIF APP1 segment carrying Orientation=o right after the SOI marker.
+func jpegWithOrientation(t *testing.T, img image.Image, o uint16) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if e := jpeg.Encode(&buf, img, nil); e != nil {
+		t.Fatalf("encode: %v", e)
+	}
+	raw := buf.Bytes()
+	if o == 0 {
+		return raw
+	}
+	seg := exifOrientationSegment(o)
+	out := make([]byte, 0, len(raw)+len(seg))
+	out = append(out, raw[:2]...)
+	out = append(out, seg...)
+	out = append(out, raw[2:]...)
+	return out
+}
+
+func solidHalves(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	red := color.RGBA{R: 255, A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if x < w/2 {
+				img.SetRGBA(x, y, red)
+			} else {
+				img.SetRGBA(x, y, blue)
+			}
+		}
+	}
+	return img
+}
+
+func closeTo(c color.Color, want color.RGBA, tol int) bool {
+	r, g, b, _ := c.RGBA()
+	wr, wg, wb, _ := want.RGBA()
+	diff := func(a, b uint32) int {
+		if a > b {
+			return int(a - b)
+		}
+		return int(b - a)
+	}
+	// RGBA() returns 16-bit-scaled values; scale tol the same way.
+	tol16 := tol * 257
+	return diff(r, wr) <= tol16 && diff(g, wg) <= tol16 && diff(b, wb) <= tol16
+}
+
+func TestJPEGOrientationReadsExifTag(t *testing.T) {
+	img := solidHalves(40, 20)
+	b := jpegWithOrientation(t, img, 6)
+	if o := jpegOrientation(b); o != 6 {
+		t.Fatalf("got orientation %d, want 6", o)
+	}
+}
+
+func TestJPEGOrientationDefaultsWithoutExif(t *testing.T) {
+	img := solidHalves(40, 20)
+	b := jpegWithOrientation(t, img, 0) // no EXIF segment injected
+	if o := jpegOrientation(b); o != 1 {
+		t.Fatalf("got orientation %d, want 1", o)
+	}
+}
+
+func TestDecodeAppliesJPEGOrientation(t *testing.T) {
+	img := solidHalves(40, 20) // left half red, right half blue
+	b := jpegWithOrientation(t, img, 6)
+	path := filepath.Join(t.TempDir(), "photo.jpg")
+	if e := os.WriteFile(path, b, 0644); e != nil {
+		t.Fatalf("write: %v", e)
+	}
+
+	got, e := decode(path)
+	if e != nil {
+		t.Fatalf("decode: %v", e)
+	}
+	if got.Bounds().Dx() != 20 || got.Bounds().Dy() != 40 {
+		t.Fatalf("got bounds %v, want 20x40 (dimensions should swap on 90deg rotation)", got.Bounds())
+	}
+	// The vertical red/blue split becomes a horizontal split after a 90deg CW rotation.
+	if px := got.At(5, 5); !closeTo(px, color.RGBA{R: 255, A: 255}, 40) {
+		t.Fatalf("top region: got %v, want red-ish", px)
+	}
+	if px := got.At(5, 35); !closeTo(px, color.RGBA{B: 255, A: 255}, 40) {
+		t.Fatalf("bottom region: got %v, want blue-ish", px)
+	}
+}
+
+func TestDecodeLeavesImageUnchangedWithoutEXIF(t *testing.T) {
+	img := solidHalves(40, 20)
+	b := jpegWithOrientation(t, img, 0) // no EXIF segment injected
+	path := filepath.Join(t.TempDir(), "photo.jpg")
+	if e := os.WriteFile(path, b, 0644); e != nil {
+		t.Fatalf("write: %v", e)
+	}
+
+	got, e := decode(path)
+	if e != nil {
+		t.Fatalf("decode: %v", e)
+	}
+	if got.Bounds().Dx() != 40 || got.Bounds().Dy() != 20 {
+		t.Fatalf("got bounds %v, want unchanged 40x20", got.Bounds())
 	}
 }

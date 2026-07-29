@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/chai2010/webp v1.1.1
+	github.com/rwcarlsen/goexif v0.0.0-20190401172101-9e8deecbddbd
 	golang.org/x/crypto v0.40.0
 	golang.org/x/image v0.28.0
 	modernc.org/sqlite v1.38.2
