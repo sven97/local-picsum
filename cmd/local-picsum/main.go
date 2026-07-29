@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -28,6 +29,7 @@ import (
 	"time"
 
 	"github.com/chai2010/webp"
+	"github.com/rwcarlsen/goexif/exif"
 	"golang.org/x/crypto/bcrypt"
 	xdraw "golang.org/x/image/draw"
 	xwebp "golang.org/x/image/webp"
@@ -817,20 +819,85 @@ func cache(seed, id string, r *http.Request) string {
 	return "no-store"
 }
 func decode(p string) (image.Image, error) {
-	f, e := os.Open(p)
+	ext := strings.ToLower(filepath.Ext(p))
+	if ext == ".webp" || ext == ".png" {
+		f, e := os.Open(p)
+		if e != nil {
+			return nil, e
+		}
+		defer f.Close()
+		if ext == ".webp" {
+			return xwebp.Decode(f)
+		}
+		return png.Decode(f)
+	}
+	b, e := os.ReadFile(p)
 	if e != nil {
 		return nil, e
 	}
-	defer f.Close()
-	ext := strings.ToLower(filepath.Ext(p))
-	if ext == ".webp" {
-		return xwebp.Decode(f)
+	img, e := jpeg.Decode(bytes.NewReader(b))
+	if e != nil {
+		return nil, e
 	}
-	if ext == ".png" {
-		return png.Decode(f)
-	}
-	return jpeg.Decode(f)
+	return applyOrientation(img, jpegOrientation(b)), nil
 }
+
+// jpegOrientation reads the EXIF Orientation tag from raw JPEG bytes,
+// defaulting to 1 (identity) if it's missing or unreadable.
+func jpegOrientation(b []byte) int {
+	x, e := exif.Decode(bytes.NewReader(b))
+	if e != nil {
+		return 1
+	}
+	tag, e := x.Get(exif.Orientation)
+	if e != nil {
+		return 1
+	}
+	o, e := tag.Int(0)
+	if e != nil {
+		return 1
+	}
+	return o
+}
+
+// applyOrientation corrects src for the given EXIF orientation value (1-8).
+// o<=1 or o>8 is treated as "no correction needed" and returns src unchanged.
+func applyOrientation(src image.Image, o int) image.Image {
+	if o <= 1 || o > 8 {
+		return src
+	}
+	b := src.Bounds()
+	w, h := b.Dx(), b.Dy()
+	ow, oh := w, h
+	if o >= 5 {
+		ow, oh = h, w
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, ow, oh))
+	for y := 0; y < oh; y++ {
+		for x := 0; x < ow; x++ {
+			var sx, sy int
+			switch o {
+			case 2: // flip horizontal
+				sx, sy = w-1-x, y
+			case 3: // rotate 180
+				sx, sy = w-1-x, h-1-y
+			case 4: // flip vertical
+				sx, sy = x, h-1-y
+			case 5: // transpose
+				sx, sy = y, x
+			case 6: // rotate 90 CW
+				sx, sy = y, h-1-x
+			case 7: // transverse
+				sx, sy = w-1-y, h-1-x
+			case 8: // rotate 90 CCW (270 CW)
+				sx, sy = w-1-y, x
+			}
+			dst.Set(x, y, src.At(b.Min.X+sx, b.Min.Y+sy))
+		}
+	}
+	return dst
+}
+
 func cover(src image.Image, w, h int) *image.RGBA {
 	b := src.Bounds()
 	sw, sh := b.Dx(), b.Dy()

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
@@ -233,5 +235,197 @@ func TestBuildTreeAutoCreatesMissingAncestors(t *testing.T) {
 	}
 	if len(b[0].Children) != 1 || b[0].Children[0].Path != "a/b/c" || b[0].Children[0].Name != "c" {
 		t.Fatalf("expected 'a/b/c' leaf node, got %+v", b[0].Children)
+	}
+}
+
+func TestApplyOrientation(t *testing.T) {
+	// 3x2 source, one distinct color per pixel:
+	//   A B C
+	//   D E F
+	A := color.RGBA{R: 255, A: 255}
+	B := color.RGBA{G: 255, A: 255}
+	C := color.RGBA{B: 255, A: 255}
+	D := color.RGBA{R: 255, G: 255, A: 255}
+	E := color.RGBA{G: 255, B: 255, A: 255}
+	F := color.RGBA{R: 255, B: 255, A: 255}
+
+	src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	src.SetRGBA(0, 0, A)
+	src.SetRGBA(1, 0, B)
+	src.SetRGBA(2, 0, C)
+	src.SetRGBA(0, 1, D)
+	src.SetRGBA(1, 1, E)
+	src.SetRGBA(2, 1, F)
+
+	cases := []struct {
+		o    int
+		w, h int
+		grid [][]color.RGBA // grid[y][x]
+	}{
+		{1, 3, 2, [][]color.RGBA{{A, B, C}, {D, E, F}}},
+		{2, 3, 2, [][]color.RGBA{{C, B, A}, {F, E, D}}},
+		{3, 3, 2, [][]color.RGBA{{F, E, D}, {C, B, A}}},
+		{4, 3, 2, [][]color.RGBA{{D, E, F}, {A, B, C}}},
+		{5, 2, 3, [][]color.RGBA{{A, D}, {B, E}, {C, F}}},
+		{6, 2, 3, [][]color.RGBA{{D, A}, {E, B}, {F, C}}},
+		{7, 2, 3, [][]color.RGBA{{F, C}, {E, B}, {D, A}}},
+		{8, 2, 3, [][]color.RGBA{{C, F}, {B, E}, {A, D}}},
+	}
+
+	for _, tc := range cases {
+		got := applyOrientation(src, tc.o)
+		if got.Bounds().Dx() != tc.w || got.Bounds().Dy() != tc.h {
+			t.Fatalf("o=%d: got bounds %v, want %dx%d", tc.o, got.Bounds(), tc.w, tc.h)
+		}
+		for y, row := range tc.grid {
+			for x, want := range row {
+				if px := got.At(x, y); px != want {
+					t.Fatalf("o=%d: pixel (%d,%d) = %v, want %v", tc.o, x, y, px, want)
+				}
+			}
+		}
+	}
+}
+
+func TestApplyOrientationIdentityReturnsSameImage(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	for _, o := range []int{0, 1, 9} {
+		if got := applyOrientation(src, o); got != image.Image(src) {
+			t.Fatalf("o=%d: expected src returned unchanged", o)
+		}
+	}
+}
+
+// exifOrientationSegment builds a minimal JPEG APP1 EXIF segment
+// containing only the Orientation tag.
+func exifOrientationSegment(o uint16) []byte {
+	var tiff bytes.Buffer
+	tiff.WriteString("II")
+	binary.Write(&tiff, binary.LittleEndian, uint16(42))
+	binary.Write(&tiff, binary.LittleEndian, uint32(8))
+
+	binary.Write(&tiff, binary.LittleEndian, uint16(1)) // 1 IFD entry
+	binary.Write(&tiff, binary.LittleEndian, uint16(0x0112))
+	binary.Write(&tiff, binary.LittleEndian, uint16(3)) // type SHORT
+	binary.Write(&tiff, binary.LittleEndian, uint32(1)) // count
+	binary.Write(&tiff, binary.LittleEndian, uint32(o)) // value (low 2 bytes)
+	binary.Write(&tiff, binary.LittleEndian, uint32(0)) // next IFD: none
+
+	var payload bytes.Buffer
+	payload.WriteString("Exif\x00\x00")
+	payload.Write(tiff.Bytes())
+
+	var seg bytes.Buffer
+	seg.WriteByte(0xFF)
+	seg.WriteByte(0xE1)
+	binary.Write(&seg, binary.BigEndian, uint16(payload.Len()+2))
+	seg.Write(payload.Bytes())
+	return seg.Bytes()
+}
+
+// jpegWithOrientation encodes img as JPEG and, if o != 0, injects an
+// EXIF APP1 segment carrying Orientation=o right after the SOI marker.
+func jpegWithOrientation(t *testing.T, img image.Image, o uint16) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if e := jpeg.Encode(&buf, img, nil); e != nil {
+		t.Fatalf("encode: %v", e)
+	}
+	raw := buf.Bytes()
+	if o == 0 {
+		return raw
+	}
+	seg := exifOrientationSegment(o)
+	out := make([]byte, 0, len(raw)+len(seg))
+	out = append(out, raw[:2]...)
+	out = append(out, seg...)
+	out = append(out, raw[2:]...)
+	return out
+}
+
+func solidHalves(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	red := color.RGBA{R: 255, A: 255}
+	blue := color.RGBA{B: 255, A: 255}
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			if x < w/2 {
+				img.SetRGBA(x, y, red)
+			} else {
+				img.SetRGBA(x, y, blue)
+			}
+		}
+	}
+	return img
+}
+
+func closeTo(c color.Color, want color.RGBA, tol int) bool {
+	r, g, b, _ := c.RGBA()
+	wr, wg, wb, _ := want.RGBA()
+	diff := func(a, b uint32) int {
+		if a > b {
+			return int(a - b)
+		}
+		return int(b - a)
+	}
+	// RGBA() returns 16-bit-scaled values; scale tol the same way.
+	tol16 := tol * 257
+	return diff(r, wr) <= tol16 && diff(g, wg) <= tol16 && diff(b, wb) <= tol16
+}
+
+func TestJPEGOrientationReadsExifTag(t *testing.T) {
+	img := solidHalves(40, 20)
+	b := jpegWithOrientation(t, img, 6)
+	if o := jpegOrientation(b); o != 6 {
+		t.Fatalf("got orientation %d, want 6", o)
+	}
+}
+
+func TestJPEGOrientationDefaultsWithoutExif(t *testing.T) {
+	img := solidHalves(40, 20)
+	b := jpegWithOrientation(t, img, 0) // no EXIF segment injected
+	if o := jpegOrientation(b); o != 1 {
+		t.Fatalf("got orientation %d, want 1", o)
+	}
+}
+
+func TestDecodeAppliesJPEGOrientation(t *testing.T) {
+	img := solidHalves(40, 20) // left half red, right half blue
+	b := jpegWithOrientation(t, img, 6)
+	path := filepath.Join(t.TempDir(), "photo.jpg")
+	if e := os.WriteFile(path, b, 0644); e != nil {
+		t.Fatalf("write: %v", e)
+	}
+
+	got, e := decode(path)
+	if e != nil {
+		t.Fatalf("decode: %v", e)
+	}
+	if got.Bounds().Dx() != 20 || got.Bounds().Dy() != 40 {
+		t.Fatalf("got bounds %v, want 20x40 (dimensions should swap on 90deg rotation)", got.Bounds())
+	}
+	// The vertical red/blue split becomes a horizontal split after a 90deg CW rotation.
+	if px := got.At(5, 5); !closeTo(px, color.RGBA{R: 255, A: 255}, 40) {
+		t.Fatalf("top region: got %v, want red-ish", px)
+	}
+	if px := got.At(5, 35); !closeTo(px, color.RGBA{B: 255, A: 255}, 40) {
+		t.Fatalf("bottom region: got %v, want blue-ish", px)
+	}
+}
+
+func TestDecodeLeavesImageUnchangedWithoutEXIF(t *testing.T) {
+	img := solidHalves(40, 20)
+	b := jpegWithOrientation(t, img, 0) // no EXIF segment injected
+	path := filepath.Join(t.TempDir(), "photo.jpg")
+	if e := os.WriteFile(path, b, 0644); e != nil {
+		t.Fatalf("write: %v", e)
+	}
+
+	got, e := decode(path)
+	if e != nil {
+		t.Fatalf("decode: %v", e)
+	}
+	if got.Bounds().Dx() != 40 || got.Bounds().Dy() != 20 {
+		t.Fatalf("got bounds %v, want unchanged 40x20", got.Bounds())
 	}
 }
