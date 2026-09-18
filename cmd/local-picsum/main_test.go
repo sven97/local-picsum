@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestPositive(t *testing.T) {
@@ -21,6 +22,21 @@ func TestPositive(t *testing.T) {
 	}
 	if n, err := positive("800"); err != nil || n != 800 {
 		t.Fatalf("got %d, %v", n, err)
+	}
+}
+
+func TestCompactDuration(t *testing.T) {
+	for _, tc := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{6 * time.Hour, "6h"},
+		{90 * time.Minute, "90m"},
+		{90 * time.Second, "1m30s"},
+	} {
+		if got := compactDuration(tc.in); got != tc.want {
+			t.Errorf("compactDuration(%s) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -206,9 +222,9 @@ func TestIsAncestor(t *testing.T) {
 func TestBuildTreeAggregatesCountsUpTheTree(t *testing.T) {
 	dirs := []string{"2022_Photos", "2022_Photos/Vacation"}
 	counts := map[string]int{
-		"":                        1, // stray file directly under the library root
-		"2022_Photos":             2,
-		"2022_Photos/Vacation":    5,
+		"":                     1, // stray file directly under the library root
+		"2022_Photos":          2,
+		"2022_Photos/Vacation": 5,
 	}
 	root := buildTree(dirs, nil, counts)
 	if root.Count != 8 {

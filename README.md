@@ -31,9 +31,17 @@ This v1 deliberately implements the image-delivery portion of Lorem Picsum only.
 ## Local development
 
 ```
+cd frontend
+npm ci
+npm run build
+cd ..
 go test ./...
 docker compose up --build
 ```
+
+The admin page is a React application built with Vite and Vercel's Geist
+typography and design tokens. Its production assets are embedded into the Go
+binary, so the deployed container does not need a Node.js runtime.
 
 ## Container releases
 
