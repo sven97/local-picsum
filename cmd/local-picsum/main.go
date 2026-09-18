@@ -268,7 +268,7 @@ func (a *app) setup(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		p := r.FormValue("password")
 		if len(p) < 10 {
-			render(w, "Setup", "<p>Password must be at least 10 characters.</p>"+setupForm())
+			render(w, "Create admin account", `<div class="form-error" role="alert">Password must be at least 10 characters.</div>`+setupForm())
 			return
 		}
 		h, e := bcrypt.GenerateFromPassword([]byte(p), bcrypt.DefaultCost)
@@ -285,7 +285,7 @@ func (a *app) setup(w http.ResponseWriter, r *http.Request) {
 	render(w, "Set up Local Picsum", setupForm())
 }
 func setupForm() string {
-	return `<p>Create the administrator password. Image URLs remain public.</p><form method="post"><label>Password <input name="password" type="password" minlength="10" required autofocus></label><button>Create account</button></form>`
+	return `<p class="description">Secure the dashboard with a password. Your image URLs will remain public.</p><form method="post"><label for="password">Password</label><input id="password" name="password" type="password" minlength="10" autocomplete="new-password" placeholder="At least 10 characters" required autofocus><button type="submit">Create account <span aria-hidden="true">→</span></button></form><p class="footnote">Your password is stored locally as a secure hash.</p>`
 }
 func (a *app) login(w http.ResponseWriter, r *http.Request) {
 	if !a.configured() {
@@ -298,13 +298,13 @@ func (a *app) login(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/admin", 303)
 			return
 		}
-		render(w, "Sign in", `<p>Invalid password.</p>`+loginForm())
+		render(w, "Sign in", `<div class="form-error" role="alert">The password you entered is incorrect.</div>`+loginForm())
 		return
 	}
 	render(w, "Sign in", loginForm())
 }
 func loginForm() string {
-	return `<form method="post"><label>Password <input name="password" type="password" required autofocus></label><button>Sign in</button></form>`
+	return `<p class="description">Enter your admin password to manage the photo library.</p><form method="post"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" placeholder="Enter your password" required autofocus><button type="submit">Sign in <span aria-hidden="true">→</span></button></form>`
 }
 func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{Name: "lp_session", Value: "", Path: "/", MaxAge: -1})
@@ -312,13 +312,24 @@ func (a *app) logout(w http.ResponseWriter, r *http.Request) {
 }
 func render(w http.ResponseWriter, title, body string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>%s</title><style>body{font-family:system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#17202a}input,button{font:inherit;padding:.5rem;margin:.4rem}button{cursor:pointer}code{background:#eef;padding:.2rem}ul.tree{list-style:none;margin:0;padding-left:1.1rem}ul.tree.root{padding-left:0}.node{padding:.15rem 0}.node.disabled{color:#888}.toggle{display:inline-block;width:1rem;cursor:pointer;user-select:none}</style></head><body><h1>%s</h1>%s</body></html>`, title, title, body)
+	fmt.Fprintf(w, `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>%s · Local Picsum</title><style>%s</style></head><body><main><section class="auth-card"><a class="brand" href="/" aria-label="Local Picsum"><span class="brand-mark" aria-hidden="true"><span></span></span><span>Local Picsum</span></a><div class="heading"><span class="eyebrow">Administrator</span><h1>%s</h1></div>%s</section></main></body></html>`, html(title), authCSS, html(title), body)
 }
 
+const authCSS = `
+@font-face{font-family:Geist;src:url('/admin/assets/Geist-Variable.woff2') format('woff2');font-weight:100 900;font-display:swap}
+:root{font-family:Geist,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1d1d1f;background:#fafafa;color-scheme:light dark}
+*{box-sizing:border-box}body{margin:0;min-width:320px;min-height:100vh;background:radial-gradient(circle at 50% 0,rgba(0,112,243,.04),transparent 360px),#fafafa}
+main{min-height:100vh;padding:48px 20px;display:grid;place-items:center}.auth-card{width:min(100%,420px);padding:32px;border:1px solid #e6e6e6;border-radius:12px;background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.06)}
+.brand{display:inline-flex;align-items:center;gap:9px;color:inherit;text-decoration:none;font-size:14px;line-height:20px;font-weight:600}.brand-mark{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;background:#1d1d1f}.brand-mark span{width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-bottom:11px solid #fff}
+.heading{margin-top:40px}.eyebrow{display:block;margin-bottom:8px;color:#666;font-size:11px;line-height:16px;letter-spacing:.06em;text-transform:uppercase}h1{margin:0;font-size:28px;line-height:36px;letter-spacing:-.04em;font-weight:600}.description{margin:10px 0 24px;color:#666;font-size:14px;line-height:22px}
+form{display:grid;gap:8px}label{font-size:13px;line-height:20px;font-weight:500}input{width:100%;height:40px;padding:0 12px;color:#1d1d1f;background:#fff;border:1px solid #c9c9c9;border-radius:6px;font:inherit;font-size:14px;outline:0;transition:border-color .15s ease,box-shadow .15s ease}input::placeholder{color:#8f8f8f}input:focus{border-color:#1d1d1f;box-shadow:0 0 0 1px #1d1d1f}input:focus-visible{outline:0}
+button{height:40px;margin-top:8px;padding:0 14px;border:1px solid #1d1d1f;border-radius:6px;display:flex;align-items:center;justify-content:center;gap:8px;color:#fff;background:#1d1d1f;font:inherit;font-size:14px;font-weight:500;cursor:pointer;transition:background .15s ease}button:hover{background:#383838}.footnote{margin:18px 0 0;color:#7d7d7d;font-size:12px;line-height:18px;text-align:center}.form-error{margin:20px 0 -8px;padding:10px 12px;color:#b42318;background:#fff0f0;border:1px solid #ffd7d7;border-radius:6px;font-size:13px;line-height:20px}
+:focus-visible{outline:2px solid #1d1d1f;outline-offset:2px}
+@media(max-width:480px){main{padding:20px 16px;align-items:start}.auth-card{margin-top:28px;padding:24px}.heading{margin-top:32px}h1{font-size:26px;line-height:34px}}
+@media(prefers-color-scheme:dark){:root{color:#ededed;background:#0a0a0a}body{background:radial-gradient(circle at 50% 0,rgba(0,112,243,.10),transparent 360px),#0a0a0a}.auth-card{background:#111;border-color:#2e2e2e;box-shadow:none}.brand-mark{background:#ededed}.brand-mark span{border-bottom-color:#0a0a0a}.eyebrow,.description{color:#a1a1a1}input{color:#ededed;background:#0a0a0a;border-color:#454545}input:focus{border-color:#ededed;box-shadow:0 0 0 1px #ededed}button{color:#0a0a0a;background:#ededed;border-color:#ededed}button:hover{background:#ccc}.footnote{color:#8f8f8f}.form-error{color:#ff7373;background:#2a1616;border-color:#5c2525}:focus-visible{outline-color:#ededed}}
+`
+
 func (a *app) admin(w http.ResponseWriter, r *http.Request) {
-	if !a.require(w, r) {
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/admin/")
 	if r.URL.Path == "/admin" || path == "" {
 		path = "index.html"
@@ -328,6 +339,10 @@ func (a *app) admin(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+	}
+	publicAsset := strings.HasPrefix(path, "assets/") || path == "GEIST-LICENSE.txt"
+	if !publicAsset && !a.require(w, r) {
+		return
 	}
 	b, err := adminUI.ReadFile("static/" + path)
 	if err != nil {

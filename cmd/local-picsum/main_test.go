@@ -8,6 +8,8 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -37,6 +39,28 @@ func TestCompactDuration(t *testing.T) {
 		if got := compactDuration(tc.in); got != tc.want {
 			t.Errorf("compactDuration(%s) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestAdminAssetsArePublicButPageRequiresAuthentication(t *testing.T) {
+	a := &app{}
+
+	assetResponse := httptest.NewRecorder()
+	a.admin(assetResponse, httptest.NewRequest(http.MethodGet, "/admin/assets/app.css", nil))
+	if assetResponse.Code != http.StatusOK {
+		t.Fatalf("public admin asset returned %d, want 200", assetResponse.Code)
+	}
+	if got := assetResponse.Header().Get("Content-Type"); got != "text/css; charset=utf-8" {
+		t.Fatalf("asset content type = %q", got)
+	}
+
+	pageResponse := httptest.NewRecorder()
+	a.admin(pageResponse, httptest.NewRequest(http.MethodGet, "/admin", nil))
+	if pageResponse.Code != http.StatusSeeOther {
+		t.Fatalf("unauthenticated admin page returned %d, want 303", pageResponse.Code)
+	}
+	if got := pageResponse.Header().Get("Location"); got != "/login" {
+		t.Fatalf("redirect location = %q, want /login", got)
 	}
 }
 
