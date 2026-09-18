@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react'
 import {
   Check,
   ChevronRight,
@@ -6,8 +6,10 @@ import {
   ExternalLink,
   Folder,
   Image,
+  ListFilter,
   LoaderCircle,
   RefreshCw,
+  Search,
   X,
 } from 'lucide-react'
 
@@ -78,9 +80,30 @@ function hasSelectedDescendant(node: TreeNode): boolean {
   return Boolean(node.children?.some((child) => child.selected || hasSelectedDescendant(child)))
 }
 
-function FolderRow({ node, depth, busy, onChange }: { node: TreeNode; depth: number; busy: boolean; onChange: (node: TreeNode, selected: boolean) => void }) {
+function countSelected(node: TreeNode): number {
+  return Number(node.selected) + (node.children?.reduce((total, child) => total + countSelected(child), 0) ?? 0)
+}
+
+function countFolders(node: TreeNode): number {
+  return 1 + (node.children?.reduce((total, child) => total + countFolders(child), 0) ?? 0)
+}
+
+function filterTree(node: TreeNode, query: string, selectedOnly: boolean, isRoot = true): TreeNode | null {
+  const children = node.children
+    ?.map((child) => filterTree(child, query, selectedOnly, false))
+    .filter((child): child is TreeNode => child !== null)
+  const searchable = `${node.name} ${node.path}`.toLocaleLowerCase()
+  const matchesQuery = !query || searchable.includes(query)
+  const matchesSelection = !selectedOnly || node.selected
+
+  if (!isRoot && !(matchesQuery && matchesSelection) && !children?.length) return null
+  return { ...node, children }
+}
+
+function FolderRow({ node, depth, busy, forceExpanded, onChange }: { node: TreeNode; depth: number; busy: boolean; forceExpanded: boolean; onChange: (node: TreeNode, selected: boolean) => void }) {
   const hasChildren = Boolean(node.children?.length)
   const [expanded, setExpanded] = useState(depth === 0 || hasSelectedDescendant(node))
+  const isExpanded = forceExpanded || expanded
   const inputId = `folder-${node.path ? encodeURIComponent(node.path) : 'root'}`
 
   return (
@@ -89,9 +112,9 @@ function FolderRow({ node, depth, busy, onChange }: { node: TreeNode; depth: num
         <button
           type="button"
           className="tree-toggle"
-          aria-label={hasChildren ? `${expanded ? 'Collapse' : 'Expand'} ${node.name}` : undefined}
-          aria-expanded={hasChildren ? expanded : undefined}
-          disabled={!hasChildren}
+          aria-label={hasChildren ? `${isExpanded ? 'Collapse' : 'Expand'} ${node.name}` : undefined}
+          aria-expanded={hasChildren ? isExpanded : undefined}
+          disabled={!hasChildren || forceExpanded}
           onClick={() => setExpanded((value) => !value)}
         >
           {hasChildren && <ChevronRight size={14} strokeWidth={1.8} />}
@@ -114,10 +137,10 @@ function FolderRow({ node, depth, busy, onChange }: { node: TreeNode; depth: num
           </span>
         </label>
       </div>
-      {hasChildren && expanded && (
+      {hasChildren && isExpanded && (
         <ul>
           {node.children!.map((child) => (
-            <FolderRow key={child.path} node={child} depth={depth + 1} busy={busy} onChange={onChange} />
+            <FolderRow key={child.path} node={child} depth={depth + 1} busy={busy} forceExpanded={forceExpanded} onChange={onChange} />
           ))}
         </ul>
       )}
@@ -147,6 +170,16 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [toast, setToast] = useState<Toast | null>(null)
+  const [folderQuery, setFolderQuery] = useState('')
+  const [selectedOnly, setSelectedOnly] = useState(false)
+
+  const normalizedQuery = folderQuery.trim().toLocaleLowerCase()
+  const visibleTree = useMemo(
+    () => tree ? filterTree(tree, normalizedQuery, selectedOnly) : null,
+    [tree, normalizedQuery, selectedOnly],
+  )
+  const selectedCount = useMemo(() => tree ? countSelected(tree) : 0, [tree])
+  const visibleCount = useMemo(() => visibleTree ? Math.max(0, countFolders(visibleTree) - 1) : 0, [visibleTree])
 
   const notify = useCallback((message: string, tone?: Toast['tone']) => {
     setToast({ message, tone })
@@ -255,6 +288,33 @@ export default function App() {
             </div>
             {status && <span className="refresh-note"><i /> Auto refresh every {status.refreshInterval}</span>}
           </div>
+          <div className="tree-toolbar">
+            <div className="search-input">
+              <Search size={15} aria-hidden="true" />
+              <input
+                type="search"
+                value={folderQuery}
+                placeholder="Search folders…"
+                aria-label="Search folders"
+                onChange={(event) => setFolderQuery(event.target.value)}
+              />
+              {folderQuery && (
+                <button type="button" aria-label="Clear folder search" onClick={() => setFolderQuery('')}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+            <Button
+              className={`secondary small filter-button${selectedOnly ? ' active' : ''}`}
+              aria-pressed={selectedOnly}
+              onClick={() => setSelectedOnly((value) => !value)}
+            >
+              <ListFilter size={14} />
+              Selected
+              <span className="count-badge">{selectedCount}</span>
+            </Button>
+            {!loading && !error && <span className="result-count">{visibleCount} {visibleCount === 1 ? 'folder' : 'folders'}</span>}
+          </div>
           <div className="tree" aria-busy={loading || busy}>
             {loading && <div className="skeletons"><i /><i /><i /></div>}
             {error && (
@@ -263,7 +323,19 @@ export default function App() {
                 <Button className="secondary small" onClick={() => void load()}>Try Again</Button>
               </div>
             )}
-            {!loading && !error && tree && <ul><FolderRow node={tree} depth={0} busy={busy} onChange={changeFolder} /></ul>}
+            {!loading && !error && visibleTree && visibleCount > 0 && (
+              <ul><FolderRow node={visibleTree} depth={0} busy={busy} forceExpanded={Boolean(normalizedQuery || selectedOnly)} onChange={changeFolder} /></ul>
+            )}
+            {!loading && !error && visibleCount === 0 && (
+              <div className="empty-tree">
+                <Search size={18} />
+                <strong>No folders found</strong>
+                <span>Try a different search or show all folders.</span>
+                {(folderQuery || selectedOnly) && (
+                  <Button className="secondary small" onClick={() => { setFolderQuery(''); setSelectedOnly(false) }}>Clear Filters</Button>
+                )}
+              </div>
+            )}
           </div>
         </Card>
 
