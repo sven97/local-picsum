@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"embed"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -55,6 +56,9 @@ type node struct {
 	Disabled bool    `json:"disabled"`
 	Count    int     `json:"count"`
 }
+
+//go:embed static
+var adminUI embed.FS
 
 // buildTree builds a folder tree from a flat list of relative directory
 // paths ("/"-separated, not including the root itself), the set of paths
@@ -201,6 +205,7 @@ func (a *app) routes(m *http.ServeMux) {
 	m.HandleFunc("/admin/", a.admin)
 	m.HandleFunc("/api/admin/folders", a.folders)
 	m.HandleFunc("/api/admin/browse", a.browse)
+	m.HandleFunc("/api/admin/status", a.adminStatus)
 	m.HandleFunc("/api/admin/refresh", a.manualRefresh)
 	m.HandleFunc("/", a.image)
 }
@@ -314,72 +319,36 @@ func (a *app) admin(w http.ResponseWriter, r *http.Request) {
 	if !a.require(w, r) {
 		return
 	}
-	var count int
-	_ = a.db.QueryRow("SELECT count(*) FROM photos").Scan(&count)
-	body := `<p><strong>` + strconv.Itoa(count) + `</strong> indexed images. The library root is <code>` + html(a.root) + `</code>.</p><p><a href="/logout">Sign out</a></p><h2>Folders</h2><p>Check a folder to add it to the library. Its subfolders are covered automatically and shown disabled.</p><div id="tree">Loading…</div><p><button id="refresh">Refresh catalog now</button> <span id="status"></span></p><h2>URL examples</h2><code>/800/600</code> · <code>/seed/home/800/600.webp?grayscale&amp;blur=2</code><script>` + adminScript + `</script>`
-	render(w, "Local Picsum", body)
+	path := strings.TrimPrefix(r.URL.Path, "/admin/")
+	if r.URL.Path == "/admin" || path == "" {
+		path = "index.html"
+	} else {
+		path = filepath.ToSlash(filepath.Clean(path))
+		if strings.HasPrefix(path, "../") {
+			http.NotFound(w, r)
+			return
+		}
+	}
+	b, err := adminUI.ReadFile("static/" + path)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	switch filepath.Ext(path) {
+	case ".html":
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	case ".css":
+		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".js":
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	case ".woff2":
+		w.Header().Set("Content-Type", "font/woff2")
+	}
+	if path != "index.html" {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	}
+	_, _ = w.Write(b)
 }
-
-const adminScript = `
-const treeEl = document.querySelector('#tree');
-function anySelected(n) {
-  if (n.selected) return true;
-  return (n.children || []).some(anySelected);
-}
-function renderNode(n, depth) {
-  const li = document.createElement('li');
-  const row = document.createElement('div');
-  row.className = 'node' + (n.disabled ? ' disabled' : '');
-  const hasChildren = n.children && n.children.length > 0;
-  const toggle = document.createElement('span');
-  toggle.className = 'toggle';
-  row.append(toggle);
-  const cb = document.createElement('input');
-  cb.type = 'checkbox';
-  cb.checked = n.selected;
-  cb.disabled = n.disabled;
-  cb.onchange = () => setFolder(n.path, cb.checked);
-  row.append(cb);
-  const label = document.createElement('span');
-  label.textContent = ' ' + n.name + ' (' + n.count + ')' + (n.disabled ? ' (included via parent)' : '');
-  row.append(label);
-  li.append(row);
-  if (hasChildren) {
-    const ul = document.createElement('ul');
-    ul.className = 'tree';
-    for (const c of n.children) ul.append(renderNode(c, depth + 1));
-    const expanded = depth === 0 || n.children.some(anySelected);
-    ul.hidden = !expanded;
-    toggle.textContent = expanded ? '▾' : '▸';
-    toggle.onclick = () => { ul.hidden = !ul.hidden; toggle.textContent = ul.hidden ? '▸' : '▾'; };
-    li.append(ul);
-  }
-  return li;
-}
-async function loadTree() {
-  const r = await fetch('/api/admin/browse');
-  if (!r.ok) { treeEl.textContent = 'Unable to load folders.'; return; }
-  const root = await r.json();
-  treeEl.innerHTML = '';
-  const ul = document.createElement('ul');
-  ul.className = 'tree root';
-  ul.append(renderNode(root, 0));
-  treeEl.append(ul);
-}
-async function setFolder(path, add) {
-  const r = add
-    ? await fetch('/api/admin/folders', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})})
-    : await fetch('/api/admin/folders?path=' + encodeURIComponent(path), {method: 'DELETE'});
-  if (r.ok) location.reload();
-  else alert(await r.text());
-}
-loadTree();
-document.querySelector('#refresh').onclick = async () => {
-  status.textContent = 'Scanning…';
-  const r = await fetch('/api/admin/refresh', {method: 'POST'});
-  status.textContent = r.ok ? 'Refresh started' : 'Failed';
-};
-`
 
 func html(s string) string {
 	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;").Replace(s)
@@ -539,6 +508,38 @@ func (a *app) browse(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(buildTree(dirs, selected, counts))
 }
+
+func (a *app) adminStatus(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAPI(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var count int
+	if err := a.db.QueryRow("SELECT count(*) FROM photos").Scan(&count); err != nil {
+		http.Error(w, "unable to load library status", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Count           int    `json:"count"`
+		Root            string `json:"root"`
+		RefreshInterval string `json:"refreshInterval"`
+	}{Count: count, Root: a.root, RefreshInterval: compactDuration(a.interval)})
+}
+
+func compactDuration(d time.Duration) string {
+	if d%time.Hour == 0 {
+		return strconv.FormatInt(int64(d/time.Hour), 10) + "h"
+	}
+	if d%time.Minute == 0 {
+		return strconv.FormatInt(int64(d/time.Minute), 10) + "m"
+	}
+	return d.String()
+}
+
 func (a *app) manualRefresh(w http.ResponseWriter, r *http.Request) {
 	if !a.requireAPI(w, r) {
 		return
@@ -648,6 +649,7 @@ func (a *app) refresh() {
 	}
 	log.Printf("catalog refresh complete: %d files", len(seen))
 }
+
 // isThumbnailCacheDir reports whether d is a Synology thumbnail-cache
 // directory ("@eaDir", created automatically inside every media folder,
 // containing one subdirectory per photo named after that photo's

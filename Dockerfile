@@ -1,8 +1,16 @@
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /src/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend ./
+RUN npm run build
+
 FROM golang:1.24-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
+COPY --from=frontend /src/cmd/local-picsum/static ./cmd/local-picsum/static
 RUN CGO_ENABLED=1 go build -trimpath -ldflags='-s -w' -o /out/local-picsum ./cmd/local-picsum
 
 FROM debian:bookworm-slim
