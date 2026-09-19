@@ -205,6 +205,7 @@ func (a *app) routes(m *http.ServeMux) {
 	m.HandleFunc("/admin/", a.admin)
 	m.HandleFunc("/api/admin/folders", a.folders)
 	m.HandleFunc("/api/admin/browse", a.browse)
+	m.HandleFunc("/api/admin/preview", a.preview)
 	m.HandleFunc("/api/admin/status", a.adminStatus)
 	m.HandleFunc("/api/admin/refresh", a.manualRefresh)
 	m.HandleFunc("/", a.image)
@@ -543,6 +544,48 @@ func (a *app) adminStatus(w http.ResponseWriter, r *http.Request) {
 		Root            string `json:"root"`
 		RefreshInterval string `json:"refreshInterval"`
 	}{Count: count, Root: a.root, RefreshInterval: compactDuration(a.interval)})
+}
+
+func (a *app) preview(w http.ResponseWriter, r *http.Request) {
+	if !a.requireAPI(w, r) {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rows, err := a.db.Query(`SELECT id, path, width, height FROM photos ORDER BY RANDOM() LIMIT 6`)
+	if err != nil {
+		http.Error(w, "unable to load image preview", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	items := make([]struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+	}, 0, 6)
+	for rows.Next() {
+		var id, path string
+		var width, height int
+		if err := rows.Scan(&id, &path, &width, &height); err != nil {
+			http.Error(w, "unable to load image preview", http.StatusInternalServerError)
+			return
+		}
+		items = append(items, struct {
+			ID     string `json:"id"`
+			Name   string `json:"name"`
+			Width  int    `json:"width"`
+			Height int    `json:"height"`
+		}{ID: id, Name: filepath.Base(path), Width: width, Height: height})
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "unable to load image preview", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(items)
 }
 
 func compactDuration(d time.Duration) string {
