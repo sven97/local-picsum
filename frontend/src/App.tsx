@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ButtonHTMLAttributes, type CSSProperties, type ReactNode } from 'react'
 import {
   Check,
+  ChevronDown,
   ChevronRight,
   Copy,
   ExternalLink,
@@ -11,6 +12,7 @@ import {
   RefreshCw,
   Search,
   X,
+  ArrowUpDown,
 } from 'lucide-react'
 
 type LibraryStatus = {
@@ -27,6 +29,8 @@ type TreeNode = {
   disabled: boolean
   count: number
 }
+
+type FolderSort = 'name-asc' | 'name-desc' | 'count-desc' | 'count-asc'
 
 type Toast = { message: string; tone?: 'success' | 'error' }
 
@@ -97,6 +101,22 @@ function filterTree(node: TreeNode, query: string, selectedOnly: boolean, isRoot
   const matchesSelection = !selectedOnly || node.selected
 
   if (!isRoot && !(matchesQuery && matchesSelection) && !children?.length) return null
+  return { ...node, children }
+}
+
+const folderCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+
+function sortTree(node: TreeNode, sort: FolderSort): TreeNode {
+  const children = node.children?.map((child) => sortTree(child, sort))
+  if (!children) return { ...node }
+
+  children.sort((left, right) => {
+    const primary = sort.startsWith('name')
+      ? folderCollator.compare(left.name, right.name)
+      : left.count - right.count
+    const direction = sort.endsWith('desc') ? -1 : 1
+    return (primary * direction) || folderCollator.compare(left.name, right.name)
+  })
   return { ...node, children }
 }
 
@@ -172,12 +192,14 @@ export default function App() {
   const [toast, setToast] = useState<Toast | null>(null)
   const [folderQuery, setFolderQuery] = useState('')
   const [selectedOnly, setSelectedOnly] = useState(false)
+  const [folderSort, setFolderSort] = useState<FolderSort>('name-asc')
 
   const normalizedQuery = folderQuery.trim().toLocaleLowerCase()
-  const visibleTree = useMemo(
-    () => tree ? filterTree(tree, normalizedQuery, selectedOnly) : null,
-    [tree, normalizedQuery, selectedOnly],
-  )
+  const visibleTree = useMemo(() => {
+    if (!tree) return null
+    const filtered = filterTree(tree, normalizedQuery, selectedOnly)
+    return filtered ? sortTree(filtered, folderSort) : null
+  }, [tree, normalizedQuery, selectedOnly, folderSort])
   const selectedCount = useMemo(() => tree ? countSelected(tree) : 0, [tree])
   const visibleCount = useMemo(() => visibleTree ? Math.max(0, countFolders(visibleTree) - 1) : 0, [visibleTree])
 
@@ -313,6 +335,17 @@ export default function App() {
               Selected
               <span className="count-badge">{selectedCount}</span>
             </Button>
+            <label className="sort-control">
+              <ArrowUpDown size={14} aria-hidden="true" />
+              <span className="sr-only">Sort folders</span>
+              <select aria-label="Sort folders" value={folderSort} onChange={(event) => setFolderSort(event.target.value as FolderSort)}>
+                <option value="name-asc">Name: A–Z</option>
+                <option value="name-desc">Name: Z–A</option>
+                <option value="count-desc">Images: most first</option>
+                <option value="count-asc">Images: least first</option>
+              </select>
+              <ChevronDown size={14} aria-hidden="true" />
+            </label>
             {!loading && !error && <span className="result-count">{visibleCount} {visibleCount === 1 ? 'folder' : 'folders'}</span>}
           </div>
           <div className="tree" aria-busy={loading || busy}>
