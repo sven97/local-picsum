@@ -21,6 +21,13 @@ type LibraryStatus = {
   refreshInterval: string
 }
 
+type PreviewImage = {
+  id: string
+  name: string
+  width: number
+  height: number
+}
+
 type TreeNode = {
   name: string
   path: string
@@ -185,7 +192,9 @@ function Snippet({ label, value, onCopy }: { label: string; value: string; onCop
 export default function App() {
   const [status, setStatus] = useState<LibraryStatus | null>(null)
   const [tree, setTree] = useState<TreeNode | null>(null)
+  const [previews, setPreviews] = useState<PreviewImage[]>([])
   const [loading, setLoading] = useState(true)
+  const [previewLoading, setPreviewLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
@@ -216,11 +225,14 @@ export default function App() {
       ])
       setStatus(nextStatus)
       setTree(nextTree)
+      const nextPreviews = await request<PreviewImage[]>('/api/admin/preview')
+      setPreviews(nextPreviews)
       setError('')
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'Unable to load the library')
     } finally {
       setLoading(false)
+      setPreviewLoading(false)
     }
   }, [])
 
@@ -266,6 +278,17 @@ export default function App() {
       notify('URL copied to clipboard', 'success')
     } catch {
       notify('Unable to copy the URL', 'error')
+    }
+  }
+
+  const refreshPreview = async () => {
+    setPreviewLoading(true)
+    try {
+      setPreviews(await request<PreviewImage[]>('/api/admin/preview'))
+    } catch (cause) {
+      notify(cause instanceof Error ? cause.message : 'Unable to load image preview', 'error')
+    } finally {
+      setPreviewLoading(false)
     }
   }
 
@@ -370,6 +393,40 @@ export default function App() {
               </div>
             )}
           </div>
+        </Card>
+
+        <Card className="preview-card">
+          <div className="card-heading">
+            <div>
+              <h2>Image preview</h2>
+              <p>Random samples from the images currently indexed by the catalog.</p>
+            </div>
+            <Button className="secondary small" onClick={() => void refreshPreview()} disabled={previewLoading}>
+              <RefreshCw size={14} className={previewLoading ? 'spin' : ''} />
+              New samples
+            </Button>
+          </div>
+          {previewLoading && previews.length === 0 && <div className="preview-skeletons"><i /><i /><i /></div>}
+          {!previewLoading && previews.length === 0 && (
+            <div className="preview-empty">
+              <Image size={18} />
+              <strong>No indexed images yet</strong>
+              <span>Select a folder and refresh the catalog to preview images here.</span>
+            </div>
+          )}
+          {previews.length > 0 && (
+            <div className="preview-grid">
+              {previews.map((preview) => (
+                <figure key={preview.id} className="preview-item">
+                  <img src={`/id/${encodeURIComponent(preview.id)}/360/240.webp`} alt={preview.name} loading="lazy" />
+                  <figcaption title={preview.name}>
+                    <span>{preview.name}</span>
+                    <small>{preview.width} × {preview.height}</small>
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          )}
         </Card>
 
         <Card>
